@@ -59,17 +59,22 @@ Deploy `web` (Next.js) and `server` (a reachable FastAPI backend). Set
 The SQLite memory file (`memory.db`) is local to wherever the server process runs.
 For multi-instance deployments, point `MEMORY_DB_PATH` at a shared volume.
 
+A backend-only Docker image is published to
+`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-memory` on `v*` tags.
+It exposes **BACKEND-ONLY** (:8000). No separate LLM container is needed —
+OpenAI is Agora-managed.
+
 ## Environment variables
 
 Backend env file: [`server/.env.example`](server/.env.example).
 
 | Variable | Required | Default | Notes |
 | --- | :---: | :---: | --- |
-| `AGORA_APP_ID` | yes | — | Agora Console → Project → App ID |
-| `AGORA_APP_CERTIFICATE` | yes | — | Agora Console → Project → App Certificate |
+| `AGORA_APP_ID` | ✅ | — | Agora Console → Project → App ID |
+| `AGORA_APP_CERTIFICATE` | ✅ | — | Agora Console → Project → App Certificate |
 | `OPENAI_MODEL` | | `gpt-4o-mini` | OpenAI model |
 | `OPENAI_API_KEY` | | — | Optional — Agora manages the OpenAI key by default (keyless). Set only if your account requires it. |
-| `MEMORY_DB_PATH` | | `memory.db` | Path to the SQLite file (relative to `server/`). |
+| `MEMORY_DB_PATH` | | `memory.db` | Path to the SQLite file (relative to `server/`, or absolute). In Docker: `/tmp/memory.db`. |
 | `MEMORY_MAX_TURNS` | | `20` | Rolling cap on stored turns per user handle. |
 | `AGENT_GREETING` | | built-in | Optional opening line override |
 
@@ -114,20 +119,29 @@ On stop:  session.get_history() ──▶  SQLite (memory.db)
 No separate `llm/` service — OpenAI is Agora-managed and requires no API key.
 See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+## What You Get
+
+- **Cross-session memory**: the user enters a name handle before the call; prior conversation turns are loaded from SQLite and re-injected via `llm.system_messages` so the agent greets them by name and recalls earlier topics.
+- A **Next.js** web client (:3000) that drives the RTC/RTM lifecycle and only ever calls `/api/*`.
+- A **FastAPI** agent backend (:8000) that owns Agora token generation, agent session lifecycle, and the SQLite memory store.
+- The `/api/get_config` · `/api/startAgent` · `/api/stopAgent` contract between the web client and the backend (Next rewrites, no Route Handlers).
+- **Managed keyless OpenAI** — Agora-managed, no `OPENAI_API_KEY` required.
+- **Zero-key** setup — the full pipeline runs with no LLM API key by default.
+
 ## How It Works
 
 1. The browser calls `/api/get_config`; the backend mints an Agora token from
    `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
 2. The user enters an optional name handle. The browser calls `/api/startAgent`
    with `userKey` in the body.
-3. The backend opens the SQLite store, loads any prior turns for that handle,
-   and builds `system_messages = [base_system_prompt, memory_context]`.
+3. The backend calls `get_history(handle)` on the SQLite store, loads any prior
+   turns for that handle, and builds `system_messages = [base_system_prompt, memory_context]`.
 4. The agent session starts with those system messages; the model greets the
    user using recalled context.
 5. The user speaks; Agora runs STT → OpenAI → MiniMax TTS → audio back to the user.
-6. `/api/stopAgent` is called (end-call button). Before calling `session.stop()`,
-   the server calls `await session.get_history()` to capture the full transcript,
-   then persists the turns to SQLite for that user handle.
+6. `/api/stopAgent` is called (end-call button). The server calls
+   `await session.get_history()` **before** `session.stop()` — the only window
+   where history is available — then persists the turns to SQLite for that handle.
 
 **Limitation:** if the session times out due to idle silence (30 s), the SDK
 stop path bypasses the history-capture block. End the call via the button to
@@ -137,8 +151,6 @@ ensure memory is saved.
 
 - `web/` — Next.js frontend (:3000); RTC/RTM lifecycle and UI.
 - `server/` — FastAPI agent backend (:8000); Agora tokens, agent lifecycle, SQLite memory.
-- `server/src/memory.py` — pure memory store (SQLite, no Agora import — unit-testable).
-- `server/tests/test_memory.py` — 5 unit tests for the memory store.
 - `ARCHITECTURE.md` — system shape and component boundaries.
 - `AGENTS.md` — guide for coding agents working in this repo.
 

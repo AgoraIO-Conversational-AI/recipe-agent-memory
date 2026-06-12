@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r /tmp/server-req.txt
 # Backend source, owned by the runtime user.
 COPY --chown=app:app server/src /app/server/src
 
+# SQLite DB path — /tmp is writable by the non-root user.
+ENV MEMORY_DB_PATH=/tmp/memory.db
+
 # Drop privileges for the running process.
 USER app
 
