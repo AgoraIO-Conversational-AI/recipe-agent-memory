@@ -9,6 +9,9 @@ env/
 ENV/
 .venv
 
+# SQLite memory store
+*.db
+
 # Environment variables
 .env.local
 .env

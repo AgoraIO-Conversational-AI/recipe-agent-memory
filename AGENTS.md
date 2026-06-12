@@ -1,13 +1,13 @@
 # Agent Development Guide
 
-For coding agents working in `recipe-agent-translator`. This repository is the
-**translator** recipe in the Agora Conversational AI recipes family.
+For coding agents working in `recipe-agent-memory`. This repository is the
+**cross-session memory** recipe in the Agora Conversational AI recipes family.
 
 ## System shape
 
 - **`server/`** — Python FastAPI agent backend (:8000). Owns Agora token
-  generation and agent session lifecycle. Uses the managed `OpenAI` vendor
-  (Agora-managed, keyless) for translation. SDK: `agora-agents>=2.0.0`
+  generation, agent session lifecycle, and the per-user SQLite memory store.
+  Uses the managed `OpenAI` vendor (Agora-managed, keyless). SDK: `agora-agents>=2.0.0`
   (`import agora_agent`).
 - **`web/`** — Next.js 16 / React 19 / TypeScript frontend (:3000).
 - Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
@@ -15,15 +15,32 @@ For coding agents working in `recipe-agent-translator`. This repository is the
 
 ## Pipeline
 
-`DeepgramSTT(language=SOURCE_LANG)` → `OpenAI` (translates to `TARGET_LANG`) → `MiniMaxTTS(voice=TTS_VOICE)`
+`DeepgramSTT(nova-3, en)` → `OpenAI` (warm assistant + memory context via `system_messages`) → `MiniMaxTTS(English_captivating_female1)`
+
+## Memory flow
+
+1. Pre-call: user enters an optional name handle in the web UI (`userKey`).
+2. `/startAgent` receives `userKey`; server opens the SQLite store, loads prior
+   turns for that handle, builds a `system_messages` list and passes it to
+   `OpenAI(...)`.
+3. Conversation proceeds; turns accumulate in Agora's session.
+4. `/stopAgent` is called from the browser. The server calls
+   `await session.get_history()` **before** `session.stop()` (the only window
+   where history is available), serialises the turns, and calls `save_memory()`.
+5. Next session with the same handle: prior turns are re-injected.
+
+**Limitation:** if the session times out due to idle timeout (30 s of silence),
+`stop()` is called by the SDK path that does not go through the capture block.
+End conversations via the end-call button to ensure memory is saved.
 
 ## Routing / ownership
 
 - UI and RTC/RTM lifecycle live in `web/`.
 - Browser-facing `/api/*` paths are Next rewrites (`web/next.config.ts`) to the
   agent backend; do not add `web/app/api/**/route.ts` for agent/token logic.
-- Token generation and agent lifecycle live in `server/src/`.
-- Translation prompt builder lives in `server/src/translation_config.py`.
+- Token generation and agent lifecycle live in `server/src/agent.py`.
+- Memory store (pure, no agora import) lives in `server/src/memory.py`.
+- Memory store tests live in `server/tests/test_memory.py`.
 
 ## Supported modes
 
@@ -39,18 +56,19 @@ For coding agents working in `recipe-agent-translator`. This repository is the
 |---|---|---|
 | `AGORA_APP_ID` | — | required |
 | `AGORA_APP_CERTIFICATE` | — | required |
-| `SOURCE_LANG` | `es` | Deepgram STT language code |
-| `TARGET_LANG` | `English` | Language name for translation prompt |
-| `TTS_VOICE` | `English_captivating_female1` | MiniMax voice matching `TARGET_LANG` |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model for translation |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
 | `OPENAI_API_KEY` | — | optional — BYO only if your account requires it |
+| `MEMORY_DB_PATH` | `memory.db` | path to SQLite file (relative to `server/`) |
+| `MEMORY_MAX_TURNS` | `20` | rolling cap on stored turns per user |
 
 ## Patterns
 
 - Keep the web client calling `/api/*`; hide backend placement behind Next rewrites.
 - Keep token generation and the App Certificate in `server/`.
 - `OPENAI_API_KEY` is optional: Agora manages the OpenAI key by default (keyless).
-- Changing `TARGET_LANG` means also picking a matching target-language `TTS_VOICE`.
+- `memory.py` must stay free of `agora_agent` imports so it can be unit-tested
+  without the SDK installed.
+- Always capture `get_history()` **before** `session.stop()`.
 
 ## Anti-patterns
 
@@ -59,6 +77,7 @@ For coding agents working in `recipe-agent-translator`. This repository is the
 - Do not put `PORT` in `server/.env.example` (it would clobber the random port
   that `verify:local:fastapi` injects via `load_dotenv(override=True)`).
 - Do not link to `docs/ai/` — that progressive-disclosure tree is not present yet.
+- Never commit `*.db` files — they contain user conversation data.
 
 ## Commands
 
@@ -80,7 +99,8 @@ Narrower checks: `bun run verify:backend`, `bun run verify:local:fastapi`,
 2. Web-affecting changes: `bun run verify:web` passes.
 3. Backend-affecting changes: `bun run verify:local` (or narrower
    `verify:local:fastapi` / `verify:backend`) passes.
-4. If you change required env vars or setup steps, update the root README,
+4. Memory logic changes: `pytest server/tests/test_memory.py -v` passes (5 tests).
+5. If you change required env vars or setup steps, update the root README,
    the relevant module README, and `server/.env.example` together.
 
 ## Git conventions
@@ -90,4 +110,4 @@ Narrower checks: `bun run verify:backend`, `bun run verify:local:fastapi`,
   tense.
 - No AI tool names in commit messages or PR descriptions. No `Co-Authored-By`
   trailers. No `--no-verify`. No git config changes.
-- Branch names: `type/short-description` (e.g. `feat/add-language-selector`).
+- Branch names: `type/short-description` (e.g. `feat/add-memory-export`).

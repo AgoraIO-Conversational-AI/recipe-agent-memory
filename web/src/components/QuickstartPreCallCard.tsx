@@ -7,12 +7,16 @@ import { Button } from "@/components/ui/button";
 type QuickstartPreCallCardProps = {
 	isLoading: boolean;
 	error: string | null;
+	userKey: string;
+	onUserKeyChange: (value: string) => void;
 	onStartConversation: () => void;
 };
 
 export function QuickstartPreCallCard({
 	isLoading,
 	error,
+	userKey,
+	onUserKeyChange,
 	onStartConversation,
 }: QuickstartPreCallCardProps) {
 	return (
@@ -24,17 +28,35 @@ export function QuickstartPreCallCard({
 			}}
 		>
 			<h1 className="text-[28px] font-medium leading-[1.2] text-white">
-				Translator Recipe
+				Memory Recipe
 			</h1>
 			<p className="mt-[14px] text-sm font-medium leading-6 text-muted-foreground">
-				Speak in the source language; the agent translates and speaks it in the
-				target language. Set SOURCE_LANG / TARGET_LANG.
+				The agent remembers past conversations. Enter your name so it can recall
+				what you told it before.
 			</p>
+
+			<div className="mt-8 w-full">
+				<label
+					htmlFor="user-key-input"
+					className="mb-1.5 block text-left text-xs font-medium text-muted-foreground"
+				>
+					Your name <span className="text-muted-foreground/60">(optional — leave blank to stay anonymous)</span>
+				</label>
+				<input
+					id="user-key-input"
+					type="text"
+					value={userKey}
+					onChange={(e) => onUserKeyChange(e.target.value)}
+					placeholder="e.g. Alex"
+					disabled={isLoading}
+					className="w-full rounded-lg border border-[#2b2b2b] bg-[#111] px-3 py-2 text-sm text-white placeholder-muted-foreground/50 outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
+				/>
+			</div>
 
 			<Button
 				onClick={onStartConversation}
 				disabled={isLoading}
-				className="mt-12 h-10 w-full rounded-lg border border-primary bg-primary text-sm font-medium text-black hover:border-white hover:bg-white hover:text-black disabled:hover:border-primary disabled:hover:bg-primary disabled:hover:text-black"
+				className="mt-6 h-10 w-full rounded-lg border border-primary bg-primary text-sm font-medium text-black hover:border-white hover:bg-white hover:text-black disabled:hover:border-primary disabled:hover:bg-primary disabled:hover:text-black"
 				aria-label={
 					isLoading
 						? "Starting conversation with AI agent"

@@ -31,5 +31,8 @@ web/dist/
 .DS_Store
 Thumbs.db
 
+# SQLite memory store (contains user conversation data — never commit)
+*.db
+
 # AI/process docs (never publish)
 docs/superpowers/

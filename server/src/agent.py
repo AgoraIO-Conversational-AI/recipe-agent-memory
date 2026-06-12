@@ -1,13 +1,14 @@
 """
-Agent — Translator Recipe
+Agent — Cross-Session Memory Recipe
 
-High-level API for managing Agora Conversational AI Agents for real-time
-speech translation. The pipeline is:
+High-level API for managing Agora Conversational AI Agents with per-user
+persistent memory. The pipeline is:
 
-  DeepgramSTT(language=SOURCE_LANG) → OpenAI (translate to TARGET_LANG) → MiniMaxTTS(TTS_VOICE)
+  DeepgramSTT(nova-3, en) → OpenAI (warm assistant with injected memory) → MiniMaxTTS
 
-OpenAI is Agora-managed (keyless by default). OPENAI_API_KEY is optional — set it
-only if your account requires a BYO key.
+OpenAI is Agora-managed (keyless by default). Conversation history is captured
+via session.get_history() BEFORE stop and persisted per-user-handle in SQLite.
+On the next session the same handle's memory is re-injected via system_messages.
 """
 import logging
 import os
@@ -17,18 +18,23 @@ from typing import Any, Dict, Optional
 from agora_agent import Area, AsyncAgora
 from agora_agent.agentkit import Agent as AgoraAgent
 from agora_agent.agentkit.vendors import OpenAI, DeepgramSTT, MiniMaxTTS
-from translation_config import build_translation_system_messages
+import memory
 
 logger = logging.getLogger("uvicorn.error")
+
+BASE_SYSTEM = (
+    "You are a warm, concise voice assistant. Greet returning users by acknowledging "
+    "something you remember about them. Keep replies to one or two sentences."
+)
 
 
 class Agent:
     """
-    High-level wrapper for Agora Conversational AI Agent for speech translation.
+    High-level wrapper for Agora Conversational AI Agent with cross-session memory.
 
-    Uses the managed OpenAI vendor (Agora-managed, keyless) to translate speech
-    from SOURCE_LANG into TARGET_LANG, then speaks the result via MiniMaxTTS.
-    No custom LLM endpoint or public tunnel is required.
+    Uses the managed OpenAI vendor (Agora-managed, keyless). Conversation turns
+    are stored per user handle in SQLite and re-injected as system context on
+    subsequent sessions.
     """
 
     def __init__(self):
@@ -36,15 +42,12 @@ class Agent:
         self.app_certificate = os.getenv("AGORA_APP_CERTIFICATE")
         self.greeting = os.getenv(
             "AGENT_GREETING",
-            "Hi! Speak to me and I'll translate.",
+            "Hi! Tell me your name and I'll remember you next time.",
         )
 
-        # OpenAI is Agora-managed (keyless), like Deepgram/MiniMax. OPENAI_API_KEY is optional.
+        # OpenAI is Agora-managed (keyless). OPENAI_API_KEY is optional.
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.source_lang = os.getenv("SOURCE_LANG", "es")
-        self.target_lang = os.getenv("TARGET_LANG", "English")
-        self.tts_voice = os.getenv("TTS_VOICE", "English_captivating_female1")
 
         if not self.app_id or not self.app_certificate:
             raise ValueError("AGORA_APP_ID and AGORA_APP_CERTIFICATE are required")
@@ -57,6 +60,8 @@ class Agent:
 
         # Track active sessions by agent_id
         self._sessions: Dict[str, Any] = {}
+        # Map agent_id -> user_key for memory capture on stop
+        self._agent_users: Dict[str, str] = {}
 
     async def start(
         self,
@@ -64,8 +69,9 @@ class Agent:
         agent_uid: int,
         user_uid: int,
         output_audio_codec: Optional[str] = None,
+        user_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Start translation agent."""
+        """Start memory-enabled assistant agent."""
         if not channel_name or not str(channel_name).strip():
             raise ValueError("channel_name is required and cannot be empty")
         if agent_uid <= 0:
@@ -75,16 +81,28 @@ class Agent:
 
         name = f"agent_{channel_name}_{agent_uid}_{int(time.time())}"
 
+        # Build system messages: base prompt + per-user memory if available
+        system_messages = [{"role": "system", "content": BASE_SYSTEM}]
+        if user_key:
+            conn = memory.get_db()
+            try:
+                past_turns = memory.get_memory(conn, user_key)
+                mem_msg = memory.build_memory_system_message(past_turns)
+                if mem_msg is not None:
+                    system_messages.append(mem_msg)
+            finally:
+                conn.close()
+
         llm = OpenAI(
             api_key=self.openai_api_key,
             model=self.openai_model,
-            system_messages=build_translation_system_messages(self.target_lang),
+            system_messages=system_messages,
             greeting_message=self.greeting,
-            temperature=0.3,
+            temperature=0.7,
         )
 
-        stt = DeepgramSTT(model="nova-3", language=self.source_lang)
-        tts = MiniMaxTTS(model="speech_2_6_turbo", voice_id=self.tts_voice)
+        stt = DeepgramSTT(model="nova-3", language="en")
+        tts = MiniMaxTTS(model="speech_2_6_turbo", voice_id="English_captivating_female1")
 
         parameters = {
             "data_channel": "rtm",
@@ -139,31 +157,31 @@ class Agent:
         )
 
         logger.info(
-            "Starting translation agent channel=%s agent_uid=%s user_uid=%s "
-            "source_lang=%s target_lang=%s",
+            "Starting memory agent channel=%s agent_uid=%s user_uid=%s user_key=%s",
             channel_name,
             agent_uid,
             user_uid,
-            self.source_lang,
-            self.target_lang,
+            user_key or "(anonymous)",
         )
 
         try:
             agent_id = await session.start()
         except Exception:
             logger.exception(
-                "Failed to start translation agent channel=%s agent_uid=%s user_uid=%s",
+                "Failed to start memory agent channel=%s agent_uid=%s user_uid=%s",
                 channel_name,
                 agent_uid,
                 user_uid,
             )
             raise
 
-        # Save session for later stop
+        # Save session (and optional user key) for memory capture on stop
         self._sessions[agent_id] = session
+        if user_key:
+            self._agent_users[agent_id] = user_key
 
         logger.info(
-            "Started translation agent agent_id=%s channel=%s",
+            "Started memory agent agent_id=%s channel=%s",
             agent_id,
             channel_name,
         )
@@ -175,11 +193,41 @@ class Agent:
         }
 
     async def stop(self, agent_id: str) -> None:
-        """Stop a running agent. Falls back to the stateless client path."""
+        """Capture history, persist memory, then stop the agent."""
         if not agent_id or not str(agent_id).strip():
             raise ValueError("agent_id is required and cannot be empty")
 
         session = self._sessions.pop(agent_id, None)
+        user_key = self._agent_users.pop(agent_id, None)
+
+        # Capture conversation BEFORE stopping (get_history only works while running)
+        if session and user_key:
+            try:
+                history = await session.get_history()
+                contents = getattr(history, "contents", None) or []
+                turns = [
+                    {
+                        "role": getattr(c, "role", "user"),
+                        "content": getattr(c, "content", ""),
+                    }
+                    for c in contents
+                ]
+                conn = memory.get_db()
+                try:
+                    memory.save_memory(conn, user_key, turns)
+                    logger.info(
+                        "Saved %d turns for user_key=%s agent_id=%s",
+                        len(turns),
+                        user_key,
+                        agent_id,
+                    )
+                finally:
+                    conn.close()
+            except Exception:
+                logger.warning(
+                    "memory capture failed agent_id=%s", agent_id, exc_info=True
+                )
+
         if session:
             try:
                 await session.stop()

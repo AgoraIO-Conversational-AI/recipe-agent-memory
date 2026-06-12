@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Agora Agent & Token Service — Translator Recipe
+Agora Agent & Token Service — Cross-Session Memory Recipe
 
 HTTP APIs:
 - GET  /get_config     -> Generate connection config
-- POST /startAgent     -> Start translation agent
-- POST /stopAgent      -> Stop agent
+- POST /startAgent     -> Start memory-enabled assistant agent
+- POST /stopAgent      -> Stop agent (captures + persists conversation memory)
 """
 import logging
 import os
@@ -59,9 +59,9 @@ except ValueError as e:
 
 # FastAPI application
 app = FastAPI(
-    title="Agora Translator Recipe Service",
+    title="Agora Memory Recipe Service",
     version="1.0.0",
-    description="Agora Conversational AI — real-time speech translation",
+    description="Agora Conversational AI — cross-session memory via per-user SQLite store",
 )
 
 app.add_middleware(
@@ -82,6 +82,7 @@ class StartAgentRequest(BaseModel):
     rtcUid: int
     userUid: int
     parameters: Optional[Dict[str, Any]] = None
+    userKey: Optional[str] = None
 
 
 class StopAgentRequest(BaseModel):
@@ -91,7 +92,7 @@ class StopAgentRequest(BaseModel):
 
 # API endpoints
 def _generate_channel_name() -> str:
-    return f"translator-{int(time.time())}-{random.randint(1000, 9999)}"
+    return f"memory-{int(time.time())}-{random.randint(1000, 9999)}"
 
 
 @router.get("/get_config")
@@ -142,7 +143,7 @@ async def get_config(
 
 @router.post("/startAgent")
 async def start_agent(request: StartAgentRequest):
-    """Start translation agent in a channel"""
+    """Start memory-enabled assistant agent in a channel"""
     if agent is None:
         raise HTTPException(
             status_code=500,
@@ -159,6 +160,7 @@ async def start_agent(request: StartAgentRequest):
             agent_uid=request.rtcUid,
             user_uid=request.userUid,
             output_audio_codec=output_audio_codec,
+            user_key=request.userKey or None,
         )
         return {"code": 0, "msg": "success", "data": result}
     except Exception as e:

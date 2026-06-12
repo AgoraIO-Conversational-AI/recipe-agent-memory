@@ -93,6 +93,7 @@ export default function LandingPage() {
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [agentJoinError, setAgentJoinError] = useState(false);
+	const [userKey, setUserKey] = useState("");
 
 	useEffect(() => {
 		import("agora-rtc-react").catch(() => {});
@@ -113,6 +114,7 @@ export default function LandingPage() {
 					config.channel_name,
 					Number(config.agent_uid),
 					Number(config.uid),
+					userKey.trim() || undefined,
 				).catch((err) => {
 					console.error("Failed to start conversation with agent:", err);
 					setAgentJoinError(true);
@@ -208,6 +210,8 @@ export default function LandingPage() {
 						<QuickstartPreCallCard
 							isLoading={isLoading}
 							error={error}
+							userKey={userKey}
+							onUserKeyChange={setUserKey}
 							onStartConversation={handleStartConversation}
 						/>
 					) : agoraData && rtmClient ? (

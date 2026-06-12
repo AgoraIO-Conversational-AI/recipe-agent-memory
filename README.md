@@ -1,15 +1,16 @@
-# Agora Conversational AI — Translator Recipe (Python)
+# Agora Conversational AI — Memory Recipe (Python)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
 [![Bun](https://img.shields.io/badge/bun-latest-black)](https://bun.sh/)
 
-The **translator** recipe in the Agora Conversational AI recipes family.
-Real-time speech translation: speak in a source language, the agent translates and
-speaks back in the target language. Fully **zero-key** — OpenAI is Agora-managed
-(no `OPENAI_API_KEY` required unless you bring your own account).
+The **cross-session memory** recipe in the Agora Conversational AI recipes family.
+A returning user (identified by a name handle entered before the call) is remembered
+across sessions — the agent re-injects their conversation history via `system_messages`
+so it can greet them naturally and recall what was said before. Fully **zero-key** —
+OpenAI is Agora-managed (no `OPENAI_API_KEY` required unless you bring your own account).
 
-**Pipeline:** `DeepgramSTT(language=SOURCE_LANG)` → `OpenAI` (translate) → `MiniMaxTTS(voice=TTS_VOICE)`
+**Pipeline:** `DeepgramSTT(nova-3, en)` → `OpenAI` (warm assistant + memory context) → `MiniMaxTTS`
 
 ## Prerequisites
 
@@ -28,16 +29,13 @@ agora login
 agora project use <your-project>          # select which project to use
 agora project env write server/.env.local # writes App ID + Certificate
 
-# 3. (Optional) customise language pair in server/.env.local
-#    SOURCE_LANG=es       # Deepgram language code for the speaker
-#    TARGET_LANG=English  # language name used in the translation prompt
-#    TTS_VOICE=English_captivating_female1  # MiniMax voice matching the target
-
-# 4. Run backend + web
+# 3. Run backend + web
 bun run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) → **Start Conversation** → speak in `SOURCE_LANG`.
+Open [http://localhost:3000](http://localhost:3000), enter your name (optional),
+then click **Start Conversation**. On a second call with the same name the agent
+will greet you using what you told it before.
 
 ### Working from a clone
 
@@ -58,10 +56,8 @@ Services:
 Deploy `web` (Next.js) and `server` (a reachable FastAPI backend). Set
 `AGENT_BACKEND_URL` in the web deployment so the Next rewrites reach the backend.
 
-A backend-only Docker image is published to
-`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-translator` on `v*` tags.
-It exposes **BACKEND-ONLY** (:8000). No separate LLM container is needed —
-OpenAI is Agora-managed.
+The SQLite memory file (`memory.db`) is local to wherever the server process runs.
+For multi-instance deployments, point `MEMORY_DB_PATH` at a shared volume.
 
 ## Environment variables
 
@@ -69,17 +65,13 @@ Backend env file: [`server/.env.example`](server/.env.example).
 
 | Variable | Required | Default | Notes |
 | --- | :---: | :---: | --- |
-| `AGORA_APP_ID` | ✅ | — | Agora Console → Project → App ID |
-| `AGORA_APP_CERTIFICATE` | ✅ | — | Agora Console → Project → App Certificate |
-| `SOURCE_LANG` | | `es` | Deepgram STT language code (speaker's language) |
-| `TARGET_LANG` | | `English` | Language name used in the translation prompt |
-| `TTS_VOICE` | | `English_captivating_female1` | MiniMax voice matching `TARGET_LANG` |
-| `OPENAI_MODEL` | | `gpt-4o-mini` | OpenAI model for translation |
+| `AGORA_APP_ID` | yes | — | Agora Console → Project → App ID |
+| `AGORA_APP_CERTIFICATE` | yes | — | Agora Console → Project → App Certificate |
+| `OPENAI_MODEL` | | `gpt-4o-mini` | OpenAI model |
 | `OPENAI_API_KEY` | | — | Optional — Agora manages the OpenAI key by default (keyless). Set only if your account requires it. |
+| `MEMORY_DB_PATH` | | `memory.db` | Path to the SQLite file (relative to `server/`). |
+| `MEMORY_MAX_TURNS` | | `20` | Rolling cap on stored turns per user handle. |
 | `AGENT_GREETING` | | built-in | Optional opening line override |
-
-> Note: when you change `TARGET_LANG`, also pick a matching `TTS_VOICE` for
-> that target language.
 
 ## Commands
 
@@ -105,46 +97,48 @@ Browser (localhost:3000)
   │  fetch /api/*
   ▼
 Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
-                          │  starts agent session (managed OpenAI vendor)
+                          │  loads SQLite memory for user handle
+                          │  starts agent session with memory-injected system_messages
                           ▼
                        Agora ConvoAI Cloud
-                          │  Deepgram STT (managed, SOURCE_LANG)
-                          │  OpenAI translation (Agora-managed, keyless)
-                          │  MiniMax TTS (managed, TTS_VOICE)
+                          │  Deepgram STT (managed, nova-3, en)
+                          │  OpenAI (Agora-managed, keyless)
+                          │  MiniMax TTS (managed)
                           ▼
-                       User hears translated speech
+                       User hears warm, context-aware responses
+
+On stop:  session.get_history() ──▶  SQLite (memory.db)
+          (captured BEFORE session.stop())
 ```
 
 No separate `llm/` service — OpenAI is Agora-managed and requires no API key.
 See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-## What You Get
-
-- A **Next.js** web client (:3000) that drives the RTC/RTM lifecycle and only ever calls `/api/*`.
-- A **FastAPI** agent backend (:8000) that owns Agora token generation and the agent session lifecycle.
-- The `/api/get_config` · `/api/startAgent` · `/api/stopAgent` contract between the web client and the backend (Next rewrites, no Route Handlers).
-- **Managed keyless OpenAI** translating STT(source) → TTS(target) — Agora-managed, no `OPENAI_API_KEY` required.
-- **Configurable language pair** via `SOURCE_LANG` / `TARGET_LANG` / `TTS_VOICE` environment variables.
-- **Zero-key** setup — the full pipeline runs with no LLM API key by default.
-
 ## How It Works
 
-1. The browser calls `/api/get_config`, which Next rewrites to the backend; the
-   backend mints an Agora token from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
-2. The browser joins the RTC channel, then calls `/api/startAgent`; the backend
-   starts an agent session using the managed OpenAI vendor.
-3. The user speaks in `SOURCE_LANG`. Agora runs STT (Deepgram, `SOURCE_LANG` locale)
-   and produces a transcript.
-4. Agora's managed OpenAI stage receives the transcript with a translation system
-   prompt and produces the translated text in `TARGET_LANG`.
-5. Agora runs TTS (MiniMax, `TTS_VOICE`) on the translated text and plays it back
-   in the channel. No API key is required — Agora manages the OpenAI account.
-6. `/api/stopAgent` ends the session.
+1. The browser calls `/api/get_config`; the backend mints an Agora token from
+   `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
+2. The user enters an optional name handle. The browser calls `/api/startAgent`
+   with `userKey` in the body.
+3. The backend opens the SQLite store, loads any prior turns for that handle,
+   and builds `system_messages = [base_system_prompt, memory_context]`.
+4. The agent session starts with those system messages; the model greets the
+   user using recalled context.
+5. The user speaks; Agora runs STT → OpenAI → MiniMax TTS → audio back to the user.
+6. `/api/stopAgent` is called (end-call button). Before calling `session.stop()`,
+   the server calls `await session.get_history()` to capture the full transcript,
+   then persists the turns to SQLite for that user handle.
+
+**Limitation:** if the session times out due to idle silence (30 s), the SDK
+stop path bypasses the history-capture block. End the call via the button to
+ensure memory is saved.
 
 ## Repo Map
 
 - `web/` — Next.js frontend (:3000); RTC/RTM lifecycle and UI.
-- `server/` — FastAPI agent backend (:8000); Agora tokens + agent lifecycle, managed OpenAI translation.
+- `server/` — FastAPI agent backend (:8000); Agora tokens, agent lifecycle, SQLite memory.
+- `server/src/memory.py` — pure memory store (SQLite, no Agora import — unit-testable).
+- `server/tests/test_memory.py` — 5 unit tests for the memory store.
 - `ARCHITECTURE.md` — system shape and component boundaries.
 - `AGENTS.md` — guide for coding agents working in this repo.
 
@@ -152,8 +146,8 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 | Problem | Fix |
 | --- | --- |
-| Agent starts but does not translate | Check `SOURCE_LANG` is a valid Deepgram BCP-47 code. |
-| Wrong TTS voice / language | Set `TTS_VOICE` to a MiniMax voice matching your `TARGET_LANG`. |
+| Agent does not recall previous conversation | Make sure you used the same name handle in both sessions and ended the first call via the end-call button (not by closing the tab). |
+| `memory.db` grows large | Reduce `MEMORY_MAX_TURNS` or delete the file to reset all memory. |
 | Local calls fail under a global proxy (Clash, etc.) | Configure your proxy to send `127.0.0.1`, `localhost`, and RFC-1918 ranges DIRECT. |
 
 ## More Docs
