@@ -7,7 +7,7 @@ For coding agents working in `recipe-agent-memory`. This repository is the
 
 - **`server/`** — Python FastAPI agent backend (:8000). Owns Agora token
   generation, agent session lifecycle, and the per-user SQLite memory store.
-  Uses the managed `OpenAI` vendor (Agora-managed, keyless). SDK: `agora-agents>=2.0.0`
+  Uses the managed `OpenAI` vendor (Agora-managed, keyless). SDK: `agora-agents>=2.3.0`
   (`import agora_agent`).
 - **`web/`** — Next.js 16 / React 19 / TypeScript frontend (:3000).
 - Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
